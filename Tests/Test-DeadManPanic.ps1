@@ -162,6 +162,28 @@ Assert-True ($global:Calls -contains 'netsh advfirewall reset') 'no export: the 
 Assert-True ($global:FwRules.ContainsKey('Panic allow 3389') -and $global:FwRules.ContainsKey('Panic allow 8080')) 'and 3389 and 8080 are allowed'
 Assert-True ($global:FwRules['Panic allow 3389'] -match 'Inbound TCP 3389 Allow Any') 'as inbound TCP allow rules on every profile'
 
+Write-Host 'Panic forgets the outbound lock-down (so the watchdog does not put it back)' -ForegroundColor Cyan
+Set-HpSetting 'NewAdmin' 'keepme'
+Set-HpSetting 'OutboundNet' '172.16.20.0/24'
+Set-HpSetting 'OutboundDns' '10.20.30.40'
+$null = Restore-Firewall
+$saved = [IO.File]::ReadAllText((Join-Path $tmp 'settings.json')) | ConvertFrom-Json
+Assert-True (([string]$saved.OutboundNet -eq '') -and ([string]$saved.OutboundDns -eq '')) 'no export (reset path): the outbound note is cleared'
+Assert-Equal ([string]$saved.NewAdmin) 'keepme' 'and the other settings are untouched'
+Set-HpSetting 'OutboundNet' '172.16.20.0/24'
+Set-Content -Path (Join-Path $stateDir 'fw-before.wfw') -Value 'FAKE'
+$null = Restore-Firewall
+Assert-Equal ([string]([IO.File]::ReadAllText((Join-Path $tmp 'settings.json')) | ConvertFrom-Json).OutboundNet) '' 'with an export (import path): the outbound note is cleared'
+Set-HpSetting 'OutboundNet' '172.16.20.0/24'
+$global:NetshExit = 1
+Assert-Throws { Restore-Firewall } 'a failing import is still an error'
+$global:NetshExit = 0
+Assert-Equal ([string]([IO.File]::ReadAllText((Join-Path $tmp 'settings.json')) | ConvertFrom-Json).OutboundNet) '172.16.20.0/24' 'and then the note is NOT cleared (the lock-down is still in place)'
+Remove-Item (Join-Path $stateDir 'fw-before.wfw')
+Remove-Item (Join-Path $tmp 'settings.json')
+$null = Restore-Firewall
+Assert-True (-not (Test-Path (Join-Path $tmp 'settings.json'))) 'no settings.json at all: nothing is created and nothing fails'
+
 $global:Adapters = @(@{ Name = 'Ethernet0'; Status = 'Up' }, @{ Name = 'Ethernet1'; Status = 'Disabled' })
 $global:Calls.Clear()
 $msg = Restore-Adapters

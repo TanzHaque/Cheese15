@@ -93,6 +93,20 @@ Assert-Equal $r.Status 'Failed' 'if the old state cannot be read, nothing is cha
 Assert-Equal $global:Box.ApplyCalls 1 'Apply was not called again (only the earlier failing one)'
 Assert-Equal @(Get-JournalRecords).Count $before 'and no new journal record exists'
 
+Write-Host 'A half-failed undo can be tried again' -ForegroundColor Cyan
+$global:FlakyFail = $true
+Register-UndoHandler 'test.flaky' { param($d, $before) $null = $d; if ($global:FlakyFail) { throw 'first try fails' }; $global:Box.Value = $before.Value }
+Reset-Box
+$r = Invoke-Change (New-TestAction -UndoKind 'test.flaky') -Confirmed
+$flakyId = $r.JournalId
+$u = Undo-Change -Id $flakyId -Confirmed
+Assert-True ($u.Status -eq 'Failed' -and $u.Message -match 'first try fails') 'the undo that throws reports why'
+Assert-Equal (@(Get-JournalRecords) | Where-Object { [int]$_.Id -eq $flakyId }).Status 'undo-failed' 'and the journal says undo-failed'
+$global:FlakyFail = $false
+$u = Undo-Change -Id $flakyId -Confirmed
+Assert-True ($u.Status -eq 'Undone' -and $global:Box.Value -eq 'old') 'trying again finishes the undo'
+Assert-Equal (Undo-Change -Id $flakyId -Confirmed).Status 'Failed' 'and a finished undo is still refused a second time'
+
 Write-Host 'Confirmed / High risk' -ForegroundColor Cyan
 Reset-Box
 $global:AskLog = @(); $script:Hp.Ask = { param($t, $text, $word) $global:AskLog += , @($t, $text, $word); $true }

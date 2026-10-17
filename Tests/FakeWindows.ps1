@@ -79,6 +79,7 @@ function New-FakeBox {
         @{ Proto = 'TCP'; Addr = '0.0.0.0'; Port = 3389; Pid = 1200 }; @{ Proto = 'TCP'; Addr = '0.0.0.0'; Port = 8080; Pid = 2400 }
         @{ Proto = 'TCP'; Addr = '0.0.0.0'; Port = 21; Pid = 3100 }; @{ Proto = 'UDP'; Addr = '0.0.0.0'; Port = 123; Pid = 1200 }
     )
+    $b.DnsServers = @('10.20.30.40')
     $b.Conns = @(
         @{ LocalPort = 50001; RemoteAddress = '172.16.5.5'; RemotePort = 4317; Pid = 2800 }
         @{ LocalPort = 50002; RemoteAddress = '203.0.113.9'; RemotePort = 443; Pid = 3100 }
@@ -637,8 +638,10 @@ function Restart-Service {
     $s.State = 'Running'; Add-FakeCall "Restart-Service $Name"
 }
 function Get-Process {
-    [CmdletBinding()] param()
-    foreach ($k in $global:FW.Procs.Keys) { [pscustomobject]@{ Id = $k; ProcessName = $global:FW.Procs[$k].Name; Path = $global:FW.Procs[$k].Path } }
+    [CmdletBinding()] param([int]$Id = 0)
+    if ($Id -and -not $global:FW.Procs.ContainsKey($Id)) { throw "Cannot find a process with the process identifier $Id." }
+    foreach ($k in $global:FW.Procs.Keys) {
+        if ($Id -and $k -ne $Id) { continue } [pscustomobject]@{ Id = $k; ProcessName = $global:FW.Procs[$k].Name; Path = $global:FW.Procs[$k].Path } }
 }
 function Get-NetTCPConnection {
     [CmdletBinding()] param([string]$State, [int]$LocalPort)
@@ -647,9 +650,14 @@ function Get-NetTCPConnection {
             if ($LocalPort -and $l.Port -ne $LocalPort) { continue }
             [pscustomobject]@{ LocalAddress = $l.Addr; LocalPort = $l.Port; OwningProcess = $l.Pid; State = 'Listen' }
         }
-    } elseif ($State -eq 'Established') {
+    } elseif ($State -eq 'Established' -or -not $State) {
         foreach ($c in $global:FW.Conns) { [pscustomobject]@{ LocalAddress = '172.16.5.30'; LocalPort = $c.LocalPort; RemoteAddress = $c.RemoteAddress; RemotePort = $c.RemotePort; OwningProcess = $c.Pid; State = 'Established' } }
     }
+}
+function Get-DnsClientServerAddress {
+    [CmdletBinding()] param([string]$AddressFamily)
+    $null = $AddressFamily
+    [pscustomobject]@{ InterfaceAlias = 'Ethernet0'; ServerAddresses = @($global:FW.DnsServers) }
 }
 function Get-NetUDPEndpoint {
     [CmdletBinding()] param()

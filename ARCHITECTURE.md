@@ -1,6 +1,6 @@
 ---
 tags: [hpcc4, windows, scripts, architecture]
-status: Tier 1 BUILT and tested against pretend boxes (26 test files, 2807 checks). Never run on real Windows. Tier 2 built: persistence + Defender audit and their fixes, and the optional watchdog; service-hardening actions not built (section 10)
+status: Tier 1 BUILT and tested against pretend boxes (26 test files, 2846 checks). Never run on real Windows. Tier 2 built: persistence + Defender audit and their fixes, and the optional watchdog; service-hardening actions not built (section 10)
 updated: 2026-10-15
 ---
 
@@ -122,7 +122,7 @@ Window: top bar = Allow changes, mode text, dead-man countdown with Arm / Extend
 "Only BAD and WARN", Re-audit, Fix selected, Fix phase..., Undo last, Undo..., Journal..., Help; centre = the rows; below = the explanation of the selected row and the log.
 The X button asks before closing while the dead-man switch is armed or a job runs. `Start-Hardening.ps1 -GuiSelfTest` builds the window and every dialog on the machine without showing anything.
 
-## 7. How each thing is tested (26 files, 2807 checks, all passing at the last run)
+## 7. How each thing is tested (26 files, 2846 checks, all passing at the last run)
 
 1. Parse + PSScriptAnalyzer lint of every script (PowerShell 7.6 + PSScriptAnalyzer 1.25): clean on all 34 deliverable scripts.
 2. **PS 5.1 compatibility lint**: `PSUseCompatibleSyntax/Commands/Types` against the Windows PowerShell 5.1 profile, so nothing PS 7-only sneaks in.
@@ -182,3 +182,9 @@ passphrase and grades each planted item FIXED / PARTIAL / MISSED / UNKNOWN. The 
 | Watchdog | **BUILT** (optional): `Watchdog.ps1`, `JudgeWatchdog.ps1`, `Act-Watchdog.ps1`; `RUNBOOK.md` section 10. Not built: automatic restore of Jenkins job files, periodic backups from the task | -- |
 | Service hardening for RDP and Jenkins | Manual, one change at a time (`RUNBOOK.md` section 7) | actions with Capture/Undo, NEIGH after each |
 | DISA GPOs | Lab-gated, not built | only after a lab pass |
+
+## Assume-breached additions (Oct 17)
+
+- `Act-Firewall.ps1`: the outbound deny allows DNS and NTP only to the box's configured DNS servers (`Get-DnsServerList`), and remembers `OutboundNet` / `OutboundDns` in `settings.json` (Undo clears them).
+- `Watchdog.ps1`: `Get-OutboundProblem` (profile outbound not Block, `HP-Out-TeamNet` missing or off) and a profile-switched-off check join the `firewall` check; `Restore-OurRules` puts them back unless `deadman\fired.json` exists. `Watch-Connections` writes each new outside address/program to `alerts.log` once. The CodeRules watchdog list allows exactly the three `Set-NetFirewallProfile` forms used. `Panic.ps1` `Clear-OutboundMarker` forgets `OutboundNet` after a firewall restore. `Undo-Change` may retry a record in status `undo-failed`.
+- Threat model: Red may own SYSTEM/kernel; host controls are speed bumps. Blackbox and NEIGH are the trust anchors. See `RUNBOOK.md` section 0.5.

@@ -200,7 +200,7 @@ function Get-OutboundFindings {
     }
     $team = Get-TeamInfo -Ips (Get-List $Facts.Host.Ips) -TeamNet ([string]$Settings.TeamNet)
     $now = @(Get-List $Facts.Ports.Connections | Select-Object -First 8 | ForEach-Object { "$($_.RemoteAddress):$($_.RemotePort) ($($_.Process))" })
-    $why = "Outbound is Allow. The plan: log first, watch about 10 minutes, then default-deny with allow rules for the team network $($team.Net) (blackbox port 22 and the log collector), DNS (53) and NTP (123). Connections open right now: $(if ($now.Count) { $now -join '; ' } else { 'none' })."
+    $why = "Outbound is Allow. The plan: log first, look at the connections below for a few minutes (an outside address you do not know is a beacon lead), then default-deny with allow rules for the team network $($team.Net) (blackbox port 22 and the log collector), DNS (53) and NTP (123). Connections open right now: $(if ($now.Count) { $now -join '; ' } else { 'none' })."
     $blocked = ''
     $inboundDone = (@($profiles | Where-Object { $_.In -ne 'Block' -or -not $_.Enabled }).Count -eq 0)
     if (-not $AllowOk) { $blocked = 'Add the allow rules for ports 3389 and 8080 first.' }

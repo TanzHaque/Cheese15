@@ -8,10 +8,10 @@ updated: 2026-10-15
 Print this. On competition day there is **no AI at all** (packet rule 6, and your own rule). This file, `0-Gameplan.md` and the scripts are all you have - read them tonight.
 
 - Team number: **t = 20**   assembly = `172.16.20.30`, blackbox = `172.16.20.5`. Configured for **Team 20**.
-- Bundle hash (first 16 characters of the SHA-256 of `hp.zip`, written after the Friday freeze): `1BAA66E0252E212A`
+- Bundle hash (first 16 characters of the SHA-256 of `hp.zip`, written after the Friday freeze): **`C141A2011FB43799`**
 - Page 1 (section 0) is the card. The rest is reference, in phase order. "By hand" blocks are only for when the tool will not run.
 
-**Honest status.** Nothing in this file was run on a real Windows Server, a real Jenkins or the real blackbox. The tool's code passed its 26 test files (2807 checks) on Linux with PowerShell 7 and a pretend Windows box. Two parts used real programs on Linux: the archive encryption opens with real OpenSSL (`Tests\Test-ActBackup.ps1`), and the upload works with a real `sshd`, real `scp` and the restricted key line (`Tests\Test-BackupTransfer.ps1`). NOT run anywhere: the blackbox setup lines, the optional mover script (5.4), every "By hand" block, the checks in sections 7-9, and the watchdog (section 10: the scheduled task, the event IDs, how long a pass takes). Rehearse all of it in the lab. A step you cannot explain, or that fails, gets fixed in the lab, not on the day.
+**Honest status.** Nothing in this file was run on a real Windows Server, a real Jenkins or the real blackbox. The tool's code passed its 26 test files (2846 checks) on Linux with PowerShell 7 and a pretend Windows box. Two parts used real programs on Linux: the archive encryption opens with real OpenSSL (`Tests\Test-ActBackup.ps1`), and the upload works with a real `sshd`, real `scp` and the restricted key line (`Tests\Test-BackupTransfer.ps1`). NOT run anywhere: the blackbox setup lines, the optional mover script (5.4), every "By hand" block, the checks in sections 7-9, and the watchdog (section 10: the scheduled task, the event IDs, how long a pass takes). Rehearse all of it in the lab. A step you cannot explain, or that fails, gets fixed in the lab, not on the day.
 
 ---
 
@@ -54,6 +54,19 @@ Colors: red BAD, yellow WARN, gray INFO, green OK. `[fix]` = the tool can fix it
 - Data goes to blackbox only (rule 3). Never copy a backup to the laptop. Open archives ON blackbox.
 - Passwords come from Bitwarden. Never type a password into a command line (`net user bob Secret1` is logged). Never save one in a file on the box.
 - No AI. Injects in your own words.
+
+---
+
+## 0.5 Red Team already owns the box (read this once, tonight)
+
+Assume the worst: before you log in, Red Team has SYSTEM, a rootkit, maybe kernel access, and a way back in. Then **nothing on the box can be fully trusted**: not the firewall, not the scripts, not what the box prints. What follows is what still pays off, in order.
+
+1. **Moving files in.** Redirecting drive C: in `mstsc` (or `Connect-Competition.bat`) is fine and allowed: the competition rules forbid Red Team from reading your computer, so it is the intended way to get `hp.zip` onto the box. Still copy ONLY what you need (the zip) onto the box, and do not copy anything back from the box except what you need (never open or run files from the box on your laptop). Clipboard paste and Plan B (blackbox, section 2) also work. Check the hash of what arrived against the paper (`Get-FileHash`); it only proves the file is the one you built, not that the box is honest.
+2. **Cut the beacons FIRST, before accounts.** Passwords you type on an owned box can be captured, so account work only slows them down. Closing the way out is what hurts them. After the first audit (it shows the connections open right now: write down every outside address and program), do the firewall phase at once: Arm the dead-man switch, then phase 4: inbound baseline, the two allow rules, then the **Outbound default-deny** row. Look at NEIGH for two green cycles. Then go on to accounts.
+3. **Outbound is now tighter than before.** The team network `172.16.20.0/24` (blackbox and the log collector are in it) is allowed; DNS and NTP are allowed ONLY to the DNS server(s) this box is set to use (the preview names them); everything else is dropped. DNS to any address is a favourite hiding place for beacons, so it is no longer open. If you do not need DNS at all, Disable the three `HP Out DNS/NTP` rules afterwards (Windows Firewall console, or `Disable-NetFirewallRule -Name HP-Out-DNS-UDP,HP-Out-DNS-TCP,HP-Out-NTP`) and test `rocket-build` again.
+4. **The watchdog (section 10) now also guards this.** If installed, every minute it checks that each firewall profile is ON, that outbound is still Block, and that the team rule `HP-Out-TeamNet` exists, and puts them back. It does NOT fight the dead-man switch: after the switch fired, outbound stays as it is until you arm again or apply the row again. It also writes `outside connection: <program> -> <ip> port <n>` to `alerts.log` ONCE per address and program: read those lines, they are your list of what to hunt (section 8). To change outbound on purpose, `-Pause 10` first, or Undo the row (that makes the tool forget it). `Panic.ps1` (the firewall step, by hand or from the dead-man task) makes the tool forget it too, so the watchdog does not put the block back after you broke the glass; apply the Outbound row again when you are ready.
+5. **Be honest about the limit.** Someone with SYSTEM or kernel access can switch off any host firewall, hide a connection from `netstat`, and stop the watchdog. These controls catch the careless and the lazy and raise the cost; they do not stop a good operator. What they cannot reach: **blackbox** (not in their scope) and the **NEIGH scoreboard**. So: send backups and the manual snapshot (section 5) to blackbox often, every 30 minutes with the routine, not once. A restore is a rebuild of data (Jenkins jobs, configs), not proof the box is clean. If a rebuild of the scored services from your own knowledge is quicker than trusting the box, that is a legitimate call.
+6. **Blackbox is `172.16.20.5`.** The tool works the address out from this box (`172.16.20.30`) and offers it as the default in the Backup phase; just press Enter. Use the number, never a name.
 
 ---
 
@@ -109,7 +122,7 @@ This file, the phase pages of `0-Gameplan.md`, the NEIGH steps (section 4, jmone
 3. NEIGH, Scoring: screenshot what is green. That is the baseline.
 4. Get the bundle onto the box, any one of:
    - In the mstsc window: copy `hp.zip` on the laptop (Ctrl+C), click the RDP desktop, paste (Ctrl+V).
-   - Before connecting: mstsc, Show Options, Local Resources, More, tick drive C. In the session copy `\\tsclient\C\Users\Blaze\Desktop\hp.zip` to the Desktop.
+   - Before connecting: mstsc, Show Options, Local Resources, More, tick drive C (allowed by the rules). In the session copy `\\tsclient\C\Users\Blaze\Desktop\hp.zip` to the Desktop.
    - Plan B (blackbox hands it over): laptop: `ssh plinktern@172.16.20.5 mkdir -p depot`, then `scp "$env:USERPROFILE\Desktop\hp.zip" plinktern@172.16.20.5:depot/`, then `ssh plinktern@172.16.20.5` and there `cd depot` and `python3 -m http.server 8000 --bind 172.16.20.5`. On the box: `Invoke-WebRequest http://172.16.20.5:8000/hp.zip -OutFile "$env:USERPROFILE\Desktop\hp.zip" -UseBasicParsing`. Stop the server with Ctrl+C when it is done.
 5. On the box, elevated PowerShell:
 

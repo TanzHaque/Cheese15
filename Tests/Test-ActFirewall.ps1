@@ -222,6 +222,9 @@ foreach ($n in 'Domain', 'Private', 'Public') { Assert-Equal $global:FW.FwProfil
 $t = Get-FwRule 'HP-Out-TeamNet'
 Assert-True ($t.Direction -eq 'Outbound' -and $t.Action -eq 'Allow' -and $t.RemoteAddress -eq '172.16.5.0/24') 'allow rule: everything to the team network (blackbox port 22 and the log collector are in it)'
 Assert-True ((Get-FwRule 'HP-Out-DNS-UDP').Protocol -eq 'UDP' -and (Get-FwRule 'HP-Out-DNS-UDP').RemotePort -eq '53' -and (Get-FwRule 'HP-Out-DNS-TCP').Protocol -eq 'TCP' -and (Get-FwRule 'HP-Out-NTP').RemotePort -eq '123') 'allow rules for DNS (UDP+TCP 53) and NTP (UDP 123)'
+Assert-True ((Get-FwRule 'HP-Out-DNS-UDP').RemoteAddress -eq '10.20.30.40' -and (Get-FwRule 'HP-Out-DNS-TCP').RemoteAddress -eq '10.20.30.40' -and (Get-FwRule 'HP-Out-NTP').RemoteAddress -eq '10.20.30.40') 'DNS and NTP are allowed ONLY to the DNS server this box uses (DNS to anywhere hides beacons)'
+Assert-True ($a.Will -join ' ' -match '10\.20\.30\.40') 'and the preview names that server'
+Assert-True ((Get-HpSetting 'OutboundNet') -eq '172.16.5.0/24' -and (Get-HpSetting 'OutboundDns') -eq '10.20.30.40') 'the tool remembers what it applied (the watchdog guards it from settings.json)'
 Assert-True ((Test-PortReachable 3389) -and (Test-PortReachable 8080)) 'inbound scoring is unaffected'
 $rows = @(Get-HpFindings -Facts (Get-HpFacts -Sections 'Firewall' -Previous $f) -Phases 4)
 Assert-True ((@($rows | Where-Object { $_.Subject -eq 'Outbound default is Block' -and $_.Severity -eq 'OK' }).Count) -eq 1) 'the judge shows outbound green'
@@ -229,6 +232,7 @@ $r = Undo-LastChange
 Assert-True ($r.Status -eq 'Undone') 'undo outbound deny'
 foreach ($n in 'Domain', 'Private', 'Public') { Assert-Equal $global:FW.FwProfiles[$n].DefaultOutboundAction 'Allow' "$n : outbound default is Allow again" }
 Assert-True ((Get-FwRule 'HP-Out-TeamNet').Enabled -eq 'False' -and (Get-FwRule 'HP-Out-NTP').Enabled -eq 'False') 'and the outbound allow rules are disabled, not deleted'
+Assert-True ((Get-HpSetting 'OutboundNet') -eq '' -and (Get-HpSetting 'OutboundDns') -eq '') 'and undo makes the tool forget it, so the watchdog stops guarding it'
 Assert-Equal (Get-FwSnapshot) $snap4 'the firewall state matches the snapshot from before'
 
 Write-Host 'Dead-man timing' -ForegroundColor Cyan

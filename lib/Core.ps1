@@ -26,6 +26,8 @@ $script:SettingDefaults = @{
     ExtraKeep         = @()         # more account names the tool must leave alone
     TeamNet           = ''          # team network like 172.16.5.0/24 (blank = work it out from this box's IP)
     BlackboxIp        = ''          # filled in at the competition
+    OutboundNet       = ''          # set by the outbound default-deny row: the network allowed out ('' = not applied). The watchdog guards it
+    OutboundDns       = ''          # the DNS servers that row let DNS and NTP reach (comma separated)
     BackupUser        = 'uploader'  # the restricted account on blackbox that may only upload (RUNBOOK.md sets it up). Not 'backup': Debian, Ubuntu and Mint already have a system account with that name
     DeadManMinutes    = 5
     JmoneyRotations   = 0           # how many times the scoring password was changed by this tool
@@ -286,7 +288,8 @@ function Undo-Change {
     if (-not $script:Hp.AllowChanges) { return New-ChangeResult 'Blocked' 'Audit mode: tick "Allow changes" first.' }
     $rec = Get-JournalRecords | Where-Object { [int]$_.Id -eq $Id } | Select-Object -First 1
     if (-not $rec) { return New-ChangeResult 'Failed' "There is no journal record #$Id." }
-    if ($rec.Status -ne 'applied') { return New-ChangeResult 'Failed' "Change #$Id is '$($rec.Status)', only an applied change can be undone." }
+    # 'undo-failed' may be tried again: the handlers can be repeated, and a half-finished undo is better finished than stuck
+    if ($rec.Status -ne 'applied' -and $rec.Status -ne 'undo-failed') { return New-ChangeResult 'Failed' "Change #$Id is '$($rec.Status)', only an applied change can be undone." }
     if (-not $rec.UndoKind) { return New-ChangeResult 'Failed' "Change #$Id has no undo ($($rec.Title))." }
     $handler = $script:UndoHandlers[[string]$rec.UndoKind]
     if (-not $handler) { return New-ChangeResult 'Failed' "No undo handler named '$($rec.UndoKind)' is loaded." }

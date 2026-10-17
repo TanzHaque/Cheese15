@@ -99,7 +99,7 @@ it is a Windows-only call behaving differently from what I expected. In the tool
 ## Known limits (said plainly)
 
 - The Windows-only parts (accounts, firewall, secedit, Defender, WMI, SMB, quser, WinNT/ADSI, scheduled tasks, the dead-man task, ACLs)
-  were tested only against pretend Windows (`Tests\FakeWindows.ps1`). The decision logic is tested (2807 checks); the calls into Windows are not.
+  were tested only against pretend Windows (`Tests\FakeWindows.ps1`). The decision logic is tested (2846 checks); the calls into Windows are not.
 - The window: every WinForms name it uses was checked against the .NET list, and its logic was run against a stand-in WinForms (`Tests\FakeWinForms.cs`).
   It was never shown on a real screen: layout, DPI, fonts, focus and the real message loop are untested. `-GuiSelfTest` is the first check on Windows.
 - RDP/NLA and Jenkins checks were proven against a real RDP server (FreeRDP shadow, xrdp) and a fake Jenkins, not a real

@@ -767,6 +767,7 @@ Assert-True ((Test-LastBuilds $cfg).Ok) 'builds: a job without a permalinks file
 # ------------------------------------------------------------------ one pass at a time, end to end
 Write-Host "`n== Invoke-Pass: the first pass on a healthy box =="
 Reset-Watchdog
+$global:FW.Conns = @(@{ LocalPort = 50001; RemoteAddress = '172.16.5.5'; RemotePort = 4317; Pid = 2800 })       # only the team network: a healthy box talks to nobody outside
 Assert-True (Invoke-TestPass) 'the first pass finishes'
 Assert-Equal (Get-AlertCount 'INFO' '^watchdog started \(version 1\); slow checks every 5 passes$') 1 'the first pass says the watchdog started'
 Assert-Equal (Get-AlertCount 'INFO' '^baseline taken \(12 parts\)') 1 'the first pass takes the baseline'
@@ -1030,6 +1031,55 @@ Assert-Equal @($f.Alerts).Count $fileLines.Count 'and every line of alerts.log, 
 Assert-Equal @($f.Alerts)[-1].Text ($fileLines[-1] -replace '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \S+\s+', '') 'the newest alert text is the last line of the file'
 Assert-True (@($f.Alerts | Where-Object { $_.AgeMinutes -gt 5 }).Count -eq 0) 'the age of a fresh alert is a few minutes at most'
 Assert-True ($f.Alerts[0].Time -match '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$') 'the time of an alert is kept as written'
+
+# ------------------------------------------------------------------ assume-breached additions: outbound guard, profiles on, who calls out
+Write-Host "`n== outbound lock-down is guarded =="
+Reset-Watchdog
+Assert-True ((Test-FirewallCheck).Ok -and @(Get-OutboundProblem).Count -eq 0) 'outbound: never applied by the tool = nothing to guard'
+[System.IO.File]::WriteAllText((Join-Path $dataRoot 'settings.json'), '{"OutboundNet":"172.16.5.0/24","OutboundDns":"10.20.30.40"}')
+$want = Get-OutboundWanted
+Assert-True ($want.Net -eq '172.16.5.0/24' -and @($want.Dns).Count -eq 1 -and $want.Dns[0] -eq '10.20.30.40') 'outbound: the wanted state is read from settings.json'
+$r = Test-FirewallCheck
+Assert-True ((-not $r.Ok) -and $r.Detail -match 'lets outbound traffic out again' -and $r.Detail -match 'HP-Out-TeamNet') 'outbound: applied by the tool but the box allows outbound and the team rule is gone = the check fails'
+$msg = Restore-OurRules
+Assert-True ($msg -match 'outbound default-deny put back') 'outbound: the repair says it put it back'
+foreach ($n in 'Domain', 'Private', 'Public') { Assert-Equal $global:FW.FwProfiles[$n].DefaultOutboundAction 'Block' "outbound repair: $n is Block" }
+Assert-True ((Get-FwRow 'HP-Out-TeamNet').RemoteAddress -eq '172.16.5.0/24' -and (Get-FwRow 'HP-Out-DNS-UDP').RemoteAddress -eq '10.20.30.40' -and (Get-FwRow 'HP-Out-NTP').RemotePort -eq '123') 'outbound repair: team rule, and DNS/NTP only to the DNS server'
+Assert-True ((Test-FirewallCheck).Ok) 'outbound repair: the check is fine again'
+$global:FW.Calls.Clear()
+Assert-Equal (Restore-OurRules) 'nothing needed changing' 'outbound: a healthy lock-down needs nothing'
+Disable-NetFirewallRule -Name 'HP-Out-TeamNet'
+Assert-True ((Test-FirewallCheck).Detail -match 'HP-Out-TeamNet .* switched off') 'outbound: the team rule switched off is seen'
+New-Item -ItemType Directory -Path (Join-Path $dataRoot 'deadman') -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $dataRoot 'deadman\fired.json'), '{"Time":"x"}')
+$global:FW.FwProfiles['Public'].DefaultOutboundAction = 'Allow'
+$msg = Restore-OurRules
+Assert-True ($msg -match 'outbound NOT put back' -and $global:FW.FwProfiles['Public'].DefaultOutboundAction -eq 'Allow') 'outbound: after the dead-man switch fired the watchdog does NOT fight it'
+Remove-Item (Join-Path $dataRoot 'deadman\fired.json')
+$global:FW.FwProfiles['Private'].Enabled = 'False'
+Assert-True ((Test-FirewallCheck).Detail -match 'the Private firewall profile is switched OFF') 'profiles: a firewall profile switched off is seen'
+$msg = Restore-OurRules
+Assert-True ($msg -match 'firewall profile Private switched on again' -and $global:FW.FwProfiles['Private'].Enabled -eq 'True') 'profiles: and it is switched on again'
+Remove-Item -Path (Join-Path $dataRoot 'settings.json')
+
+Write-Host "`n== outside connections =="
+Reset-Watchdog
+Initialize-Folders
+$global:FW.Procs[3100] = @{ Name = 'ftpd'; Path = 'C:\Users\Public\ftpd.exe' }
+$st = @{}
+Watch-Connections $st
+$alerts = Get-AlertText
+Assert-True ($alerts -match 'outside connection: ftpd -> 203\.0\.113\.9 port 443') 'connections: a program talking to an outside address is listed with its name'
+Assert-True ($alerts -notmatch '172\.16\.5\.5') 'connections: an address inside the team network is not listed'
+$before = @($alerts -split "`n" | Where-Object { $_ }).Count
+Watch-Connections $st
+Assert-Equal @((Get-AlertText) -split "`n" | Where-Object { $_ }).Count $before 'connections: the same connection is listed only once'
+$global:FW.Conns += @{ LocalPort = 3389; RemoteAddress = '198.51.100.7'; RemotePort = 50123; Pid = 1200 }
+Watch-Connections $st
+Assert-True ((Get-AlertText) -notmatch '198\.51\.100\.7') 'connections: someone connecting IN to RDP is not listed'
+$global:FW.Conns += @{ LocalPort = 50077; RemoteAddress = '198.51.100.8'; RemotePort = 8443; Pid = 99999 }
+Watch-Connections $st
+Assert-True ((Get-AlertText) -match 'pid 99999 -> 198\.51\.100\.8 port 8443') 'connections: a process that has no name any more is still listed (by pid)'
 
 Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Write-TestSummary

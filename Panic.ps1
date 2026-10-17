@@ -55,11 +55,26 @@ function Test-PortLocal {
 }
 
 # ---------------------------------------------------------------- the steps (each returns a sentence, or throws)
+function Clear-OutboundMarker {
+    # The tool remembers in settings.json that outbound default-deny was applied (the watchdog guards it). A restored firewall no longer
+    # has that lock-down, so forget it, or the watchdog would put the block back a minute after you broke the glass. Never throws.
+    $file = Join-Path $DataDir 'settings.json'
+    try {
+        if (-not (Test-Path $file)) { return }
+        $s = [System.IO.File]::ReadAllText($file) | ConvertFrom-Json
+        if (-not [string]$s.OutboundNet) { return }
+        $s.OutboundNet = ''
+        $s.OutboundDns = ''
+        [System.IO.File]::WriteAllText($file, (ConvertTo-Json -InputObject $s -Depth 4))
+    } catch { Write-PanicLog "(could not clear the outbound note in settings.json: $($_.Exception.Message))" 'DarkGray' }
+}
+
 function Restore-Firewall {
     $export = Join-Path $StateDir 'fw-before.wfw'
     if ((Test-Path $export) -and -not $Fallback) {
         $out = & netsh.exe advfirewall import $export 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) { throw "netsh could not import $export : $out" }
+        Clear-OutboundMarker
         return "firewall policy put back from $export"
     }
     & netsh.exe advfirewall reset | Out-Null
@@ -69,6 +84,7 @@ function Restore-Firewall {
             New-NetFirewallRule -DisplayName $name -Direction Inbound -Protocol TCP -LocalPort $port -Action Allow -Profile Any | Out-Null
         }
     }
+    Clear-OutboundMarker
     'firewall reset to the Windows default, then inbound 3389 and 8080 allowed'
 }
 

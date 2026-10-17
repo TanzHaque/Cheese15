@@ -170,7 +170,7 @@ function Send-Http {
             $respBody = $reader.ReadToEnd()
             $reader.Close()
         }
-    } catch { }
+    } catch { $respBody = '' }          # a body that cannot be read is treated as empty
     $resp.Close()
     [pscustomobject]@{ Code = $code; Location = $loc; Body = $respBody; Error = '' }
 }

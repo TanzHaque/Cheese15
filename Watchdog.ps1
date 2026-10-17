@@ -134,6 +134,19 @@ function Get-BlackboxIp {
     try { [string]([System.IO.File]::ReadAllText($file) | ConvertFrom-Json).BlackboxIp } catch { '' }
 }
 
+function Get-OutboundWanted {
+    # What the tool saved when the outbound default-deny row was applied (Net is '' when it never was). Read from settings.json.
+    $want = @{ Net = ''; Dns = @() }
+    $file = Join-Path $DataDir 'settings.json'
+    if (-not (Test-Path $file)) { return $want }
+    try {
+        $s = [System.IO.File]::ReadAllText($file) | ConvertFrom-Json
+        $want.Net = [string]$s.OutboundNet
+        $want.Dns = @(([string]$s.OutboundDns) -split ',' | Where-Object { $_ })
+    } catch { $want = @{ Net = ''; Dns = @() } }
+    $want
+}
+
 function Get-Config {
     # config.json is written by the tool when it installs the watchdog. It only holds what the tool found out: the Jenkins home folder.
     $cfg = @{ JenkinsHome = '' }
@@ -304,6 +317,21 @@ function Get-BlockingRules {
     $found
 }
 
+function Get-OutboundProblem {
+    # What is wrong with the outbound lock-down (nothing to check when the tool never applied it): the default is no longer Block,
+    # or the allow rule for the team network is gone or off.
+    $want = Get-OutboundWanted
+    $bad = @()
+    if (-not $want.Net) { return $bad }
+    foreach ($p in @(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction SilentlyContinue)) {
+        if ([string]$p.DefaultOutboundAction -ne 'Block') { $bad += "the $($p.Name) profile lets outbound traffic out again" }
+    }
+    $rule = Get-NetFirewallRule -Name 'HP-Out-TeamNet' -ErrorAction SilentlyContinue
+    if (-not $rule) { $bad += 'rule HP-Out-TeamNet (outbound to the team network) is missing' }
+    elseif ([string]$rule.Enabled -ne 'True') { $bad += 'rule HP-Out-TeamNet (outbound to the team network) is switched off' }
+    $bad
+}
+
 function Test-FirewallCheck {
     $bad = @()
     foreach ($port in $ScoredPorts) {
@@ -312,7 +340,9 @@ function Test-FirewallCheck {
     }
     foreach ($p in @(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction SilentlyContinue)) {
         if ([string]$p.AllowInboundRules -eq 'False') { $bad += "the $($p.Name) profile ignores every inbound allow rule" }
+        if ([string]$p.Enabled -eq 'False') { $bad += "the $($p.Name) firewall profile is switched OFF" }
     }
+    foreach ($o in (Get-OutboundProblem)) { $bad += $o }
     foreach ($b in (Get-BlockingRules)) { $bad += "the Block rule '$($b.DisplayName)' stops port $($b.Port)" }
     New-CheckResult 'firewall' ($bad.Count -eq 0) $(if ($bad.Count) { $bad -join '; ' } else { 'the allow rules for 3389 and 8080 are in place and nothing blocks them' })
 }
@@ -445,6 +475,32 @@ function Restore-OurRules {
         if ([string]$p.AllowInboundRules -ne 'False') { continue }
         Set-NetFirewallProfile -Name $p.Name -AllowInboundRules True
         $done += "profile $($p.Name) uses inbound allow rules again"
+    }
+    foreach ($p in @(Get-NetFirewallProfile -PolicyStore ActiveStore)) {
+        if ([string]$p.Enabled -ne 'False') { continue }
+        Set-NetFirewallProfile -Name $p.Name -Enabled True
+        $done += "firewall profile $($p.Name) switched on again"
+    }
+    if (@(Get-OutboundProblem).Count -gt 0) {
+        if (Test-Path (Join-Path $DataDir 'deadman\fired.json')) {
+            $done += 'outbound NOT put back: the dead-man switch fired earlier (arm it again, or apply the outbound row again with the tool)'
+        } else {
+            $want = Get-OutboundWanted
+            $dnsTo = @($want.Dns)
+            if ($dnsTo.Count -eq 0) { $dnsTo = @('127.0.0.1') }
+            foreach ($r in @(
+                    @('HP-Out-TeamNet', 'HP Out Team Net', 'Any', '', @($want.Net)),
+                    @('HP-Out-DNS-UDP', 'HP Out DNS UDP', 'UDP', '53', $dnsTo),
+                    @('HP-Out-DNS-TCP', 'HP Out DNS TCP', 'TCP', '53', $dnsTo),
+                    @('HP-Out-NTP', 'HP Out NTP', 'UDP', '123', $dnsTo))) {
+                if (Get-NetFirewallRule -Name $r[0] -ErrorAction SilentlyContinue) { Remove-NetFirewallRule -Name $r[0] }
+                $args2 = @{ Name = $r[0]; DisplayName = $r[1]; Direction = 'Outbound'; Action = 'Allow'; Profile = 'Any'; Protocol = $r[2]; RemoteAddress = $r[4]; Description = 'HP: outbound allow' }
+                if ($r[3]) { $args2['RemotePort'] = $r[3] }
+                New-NetFirewallRule @args2 | Out-Null
+            }
+            Set-NetFirewallProfile -Name Domain, Private, Public -DefaultOutboundAction Block
+            $done += 'outbound default-deny put back'
+        }
     }
     foreach ($b in (@(Get-BlockingRules) | Sort-Object -Property Name -Unique)) {
         try {
@@ -583,6 +639,44 @@ function Watch-Events {
             $State[$timeKey] = [Math]::Max([long]$State[$timeKey], $e.TimeCreated.Ticks)
         }
     }
+}
+
+function Watch-Connections {
+    # Every program that talks to (or tries to reach) an address outside the team network is written to alerts.log ONCE per address,
+    # port and program. With outbound default-deny most of these are attempts that get dropped: the program name is your lead for the hunt.
+    # Connections that come IN to a service of this box (RDP, Jenkins, SSH, SMB, WinRM) are not listed.
+    param($State)
+    $want = Get-OutboundWanted
+    $prefix = ''
+    if ($want.Net -match '^(\d+\.\d+\.\d+)\.0/24$') { $prefix = $Matches[1] + '.' }
+    else {
+        foreach ($a in @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)) {
+            if ([string]$a.IPAddress -match '^(172\.16\.\d+)\.\d+$') { $prefix = $Matches[1] + '.'; break }
+        }
+    }
+    $skipLocal = @(3389, 8080, 22, 135, 139, 445, 5985, 5986)
+    $seen = @{}
+    foreach ($k in ([string]$State['conn.seen'] -split '\|')) { if ($k) { $seen[$k] = 1 } }
+    $order = New-Object System.Collections.ArrayList
+    foreach ($k in ([string]$State['conn.seen'] -split '\|')) { if ($k) { [void]$order.Add($k) } }
+    $count = 0
+    foreach ($c in @(Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { @('Established', 'SynSent') -contains [string]$_.State })) {
+        $ip = [string]$c.RemoteAddress
+        if (-not $ip -or $ip -match '^(127\.|0\.|169\.254\.)' -or $ip -eq '::' -or $ip -eq '::1' -or $ip -match '^fe80') { continue }
+        if ($prefix -and $ip.StartsWith($prefix)) { continue }
+        if ($skipLocal -contains [int]$c.LocalPort) { continue }
+        $proc = ''
+        try { $proc = [string](Get-Process -Id ([int]$c.OwningProcess) -ErrorAction Stop).ProcessName } catch { $proc = "pid $($c.OwningProcess)" }
+        $key = "${ip}:$($c.RemotePort) $proc"
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = 1
+        [void]$order.Add($key)
+        $count++
+        if ($count -le 10) { Write-Alert 'ALERT' "outside connection: $proc -> $ip port $($c.RemotePort) ($($c.State))" }
+    }
+    if ($count -gt 10) { Write-Alert 'ALERT' "$($count - 10) more new outside connections not listed" }
+    while ($order.Count -gt 150) { $order.RemoveAt(0) }
+    $State['conn.seen'] = ($order -join '|')
 }
 
 function Watch-FailedLogons {
@@ -777,6 +871,7 @@ function Invoke-Pass {
 
     Invoke-Guarded $state 'events' { Watch-Events $state }
     Invoke-Guarded $state 'failed logons' { Watch-FailedLogons $state }
+    Invoke-Guarded $state 'connections' { Watch-Connections $state }
     if ($slow) { Invoke-Guarded $state 'baseline' { Compare-AllBaselines $state } }
 
     Save-State $state

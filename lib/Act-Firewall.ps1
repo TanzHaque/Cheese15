@@ -33,7 +33,7 @@ function Assert-ScoredPortsAllowed {
 
 function New-OurRule {
     # Creates one of the tool's own allow rules. If a rule with that name exists (someone changed it?) it is rebuilt from scratch.
-    param([string]$Name, [string]$DisplayName, [string]$Direction, [string]$Protocol, [string]$LocalPort = '', [string]$RemotePort = '', [string]$RemoteAddress = 'Any', [string]$Description = '')
+    param([string]$Name, [string]$DisplayName, [string]$Direction, [string]$Protocol, [string]$LocalPort = '', [string]$RemotePort = '', [string[]]$RemoteAddress = @('Any'), [string]$Description = '')
     Assert-OurRule $Name
     if (Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue) { Remove-NetFirewallRule -Name $Name }
     $ruleArgs = @{
@@ -195,15 +195,32 @@ function Request-OutboundDeny {
     New-OutboundDenyAction -Net $net
 }
 
+function Get-DnsServerList {
+    # The IPv4 DNS servers this box is set to use (never loopback). Outbound DNS and NTP are only allowed to these:
+    # DNS to ANY address is a favourite way to hide a beacon, because DNS is almost never blocked.
+    $found = @()
+    try {
+        foreach ($a in @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop)) {
+            foreach ($s in @($a.ServerAddresses)) {
+                if ($s -match '^\d{1,3}(\.\d{1,3}){3}$' -and $s -notmatch '^127\.' -and $found -notcontains [string]$s) { $found += [string]$s }
+            }
+        }
+    } catch { Write-HpLog "could not read the DNS servers: $($_.Exception.Message)" 'WARN' }
+    $found
+}
+
 function New-OutboundDenyAction {
     param([string]$Net)
+    $dns = @(Get-DnsServerList)
+    $dnsText = $(if ($dns.Count) { $dns -join ', ' } else { 'none found, so DNS and NTP stay blocked' })
     New-Action -Id 'fw.outbound' -Title 'Outbound default-deny' -Risk 'High' -TypeWord 'OUTBOUND' -NeedsDeadMan `
-        -Will @("First create these allow rules: all traffic to $Net (blackbox port 22 and the log collector are in it), DNS (TCP+UDP 53), NTP (UDP 123)",
+        -Will @("First create these allow rules: all traffic to $Net (blackbox port 22 and the log collector are in it), DNS (TCP+UDP 53) and NTP (UDP 123) ONLY to: $dnsText",
                 'Then set the outbound default action to Block on all three profiles',
                 'Everything else that leaves this box is dropped: Windows Update, Defender updates, downloads, and a backdoor calling home',
+                'The watchdog (if installed) puts this back if something switches it off, and lists every program that tries to reach an outside address',
                 'Jenkins builds that fetch from the Internet will fail: trigger rocket-build and see SUCCESS before you press Keep changes',
                 'If scoring or the log collector breaks, do nothing: the dead-man switch restores the old policy') `
-        -Data @{ Net = $Net } `
+        -Data @{ Net = $Net; Dns = ($dns -join ',') } `
         -Capture {
             param($d)
             $null = $d
@@ -214,11 +231,15 @@ function New-OutboundDenyAction {
             param($d, $before)
             $null = $before
             New-OurRule -Name 'HP-Out-TeamNet' -DisplayName 'HP Out Team Net' -Direction 'Outbound' -Protocol 'Any' -RemoteAddress $d.Net -Description 'HP: team network'
-            New-OurRule -Name 'HP-Out-DNS-UDP' -DisplayName 'HP Out DNS UDP' -Direction 'Outbound' -Protocol 'UDP' -RemotePort '53' -Description 'HP: DNS'
-            New-OurRule -Name 'HP-Out-DNS-TCP' -DisplayName 'HP Out DNS TCP' -Direction 'Outbound' -Protocol 'TCP' -RemotePort '53' -Description 'HP: DNS'
-            New-OurRule -Name 'HP-Out-NTP' -DisplayName 'HP Out NTP' -Direction 'Outbound' -Protocol 'UDP' -RemotePort '123' -Description 'HP: NTP'
+            $dnsTo = @([string]$d.Dns -split ',' | Where-Object { $_ })
+            if ($dnsTo.Count -eq 0) { $dnsTo = @('127.0.0.1') }            # no DNS server known: the rules exist but match nothing
+            New-OurRule -Name 'HP-Out-DNS-UDP' -DisplayName 'HP Out DNS UDP' -Direction 'Outbound' -Protocol 'UDP' -RemotePort '53' -RemoteAddress $dnsTo -Description 'HP: DNS'
+            New-OurRule -Name 'HP-Out-DNS-TCP' -DisplayName 'HP Out DNS TCP' -Direction 'Outbound' -Protocol 'TCP' -RemotePort '53' -RemoteAddress $dnsTo -Description 'HP: DNS'
+            New-OurRule -Name 'HP-Out-NTP' -DisplayName 'HP Out NTP' -Direction 'Outbound' -Protocol 'UDP' -RemotePort '123' -RemoteAddress $dnsTo -Description 'HP: NTP'
             Set-NetFirewallProfile -Name Domain, Private, Public -DefaultOutboundAction Block
-            'Outbound is Block. Allowed out: the team network, DNS, NTP.'
+            Set-HpSetting 'OutboundNet' $d.Net                               # the watchdog reads these two from settings.json
+            Set-HpSetting 'OutboundDns' ([string]$d.Dns)
+            'Outbound is Block. Allowed out: the team network, and DNS and NTP to the DNS servers only.'
         } `
         -UndoKind 'fw.outbound'
 }
@@ -228,6 +249,8 @@ Register-UndoHandler 'fw.outbound' {
     param($data, $before)
     $null = $data
     foreach ($p in @($before.Profiles)) { Set-NetFirewallProfile -Name $p.Name -DefaultOutboundAction $p.Out }
+    Set-HpSetting 'OutboundNet' ''                                           # so the watchdog stops guarding it
+    Set-HpSetting 'OutboundDns' ''
     foreach ($n in 'HP-Out-TeamNet', 'HP-Out-DNS-UDP', 'HP-Out-DNS-TCP', 'HP-Out-NTP') {
         Assert-OurRule $n
         Disable-NetFirewallRule -Name $n -ErrorAction SilentlyContinue

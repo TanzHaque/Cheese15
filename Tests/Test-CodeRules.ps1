@@ -316,7 +316,7 @@ $wdMayChange = @{
     'Remove-Item'             = @('Use-Flag', 'Test-RightsCheck', 'Save-Baselines', 'Start-Watchdog')   # its own notes and baseline notes, one temp file
     'New-NetFirewallRule'     = @('Restore-OurRules')                                          # the tool's own HP-Allow-TCP-<port> rules
     'Remove-NetFirewallRule'  = @('Restore-OurRules')                                          # ... only to rebuild one of those (by name)
-    'Set-NetFirewallProfile'  = @('Restore-OurRules')                                          # -AllowInboundRules True, nothing else
+    'Set-NetFirewallProfile'  = @('Restore-OurRules')                                          # inbound allow rules on, profile on, outbound Block (exact forms below)
     'Disable-NetFirewallRule' = @('Restore-OurRules')                                          # a Block rule that stops a scored port for everybody
     'secedit.exe'             = @('Test-RightsCheck')                                          # /export only: it reads the rights
     'net.exe'                 = @('Get-GroupMembers')                                          # localgroup NAME only: it lists the members
@@ -333,8 +333,9 @@ foreach ($c in $wdTree.FindAll({ param($a) $a -is [System.Management.Automation.
     if ($n -eq 'secedit.exe' -and ($text -notmatch '/export ' -or $text -match '/configure')) { $wdBad += "secedit.exe is only for /export: $text" }
     if ($n -eq 'net.exe' -and $text -notmatch '^& net\.exe localgroup \$group\.Name') { $wdBad += "net.exe is only for localgroup: $text" }
     if ($n -eq 'Remove-Item' -and $text -match '(?i)-Recurse') { $wdBad += "Remove-Item -Recurse: $text" }
-    if ($n -eq 'Remove-NetFirewallRule' -and $text -notmatch '^Remove-NetFirewallRule -Name \$name$') { $wdBad += "Remove-NetFirewallRule must name one rule: $text" }
-    if ($n -eq 'Set-NetFirewallProfile' -and $text -notmatch '^Set-NetFirewallProfile -Name \$p\.Name -AllowInboundRules True$') { $wdBad += "Set-NetFirewallProfile: $text" }
+    if ($n -eq 'Remove-NetFirewallRule' -and $text -notmatch '^Remove-NetFirewallRule -Name (\$name|\$r\[0\])$') { $wdBad += "Remove-NetFirewallRule must name one rule: $text" }
+    # three exact forms only: inbound allow rules back on, a profile back on, and the outbound default back to Block (what the tool set itself)
+    if ($n -eq 'Set-NetFirewallProfile' -and $text -notmatch '^Set-NetFirewallProfile -Name (\$p\.Name -AllowInboundRules True|\$p\.Name -Enabled True|Domain, Private, Public -DefaultOutboundAction Block)$') { $wdBad += "Set-NetFirewallProfile: $text" }
 }
 Assert-True ($wdBad.Count -eq 0) ('Watchdog.ps1 changes only what the list allows, only in the listed functions' + $(if ($wdBad.Count) { '  BAD: ' + (($wdBad | Select-Object -Unique) -join ' | ') } else { '' }))
 $wdUnused = @()
